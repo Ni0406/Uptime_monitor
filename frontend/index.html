@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Uptime Monitor</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f7f6; margin: 0; padding: 20px; }
+        .container { max-width: 900px; margin: auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        .hidden { display: none !important; }
+        .flex { display: flex; gap: 10px; margin-bottom: 20px; align-items: center; }
+        input, button { padding: 10px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px; }
+        input { flex: 1; }
+        button { background: #007bff; color: white; cursor: pointer; border: none; font-weight: bold; }
+        button:hover { background: #0056b3; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #c82333; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; margin-bottom: 30px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background-color: #f8f9fa; color: #333; }
+        .up { color: #28a745; font-weight: bold; }
+        .down { color: #dc3545; font-weight: bold; }
+        .unknown { color: #6c757d; font-weight: bold; }
+        .auth-panel { background: #e9ecef; padding: 20px; border-radius: 5px; margin-bottom: 30px; }
+        .user-badge { background: #28a745; color: white; padding: 5px 15px; border-radius: 20px; font-size: 14px; font-weight: bold; margin-bottom: 15px; display: inline-block; }
+        h2 { border-bottom: 2px solid #007bff; padding-bottom: 10px; margin-top: 40px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 style="text-align: center; color: #333;">📊 Мониторинг сайтов</h1>
+        
+
+        <div id="authPanel" class="auth-panel">
+            <h3 style="margin-top: 0;">Вход / Регистрация</h3>
+            <p style="font-size: 14px; color: #666;">Зарегистрируйтесь, чтобы добавить свои сайты для круглосуточного мониторинга.</p>
+            <div class="flex">
+                <input type="email" id="email" placeholder="Ваш Email">
+                <input type="password" id="password" placeholder="Пароль">
+                <button onclick="login()">Войти</button>
+                <button onclick="register()" style="background: #28a745;">Создать аккаунт</button>
+            </div>
+        </div>
+
+
+        <div id="adminPanel" class="auth-panel hidden">
+            <div class="user-badge">👤 Вы вошли как: <span id="userEmailDisplay">загрузка...</span></div>
+            <div class="flex">
+                <input type="text" id="siteName" placeholder="Название сайта (напр. Мой Блог)">
+                <input type="url" id="siteUrl" placeholder="https://...">
+                <button onclick="addWebsite()">+ Добавить на мониторинг</button>
+                <button onclick="logout()" class="btn-danger">Выйти</button>
+            </div>
+        </div>
+
+
+        <div id="mySitesSection" class="hidden">
+            <h2>📁 Мои отслеживаемые сайты</h2>
+            <table>
+                <thead><tr><th>Название</th><th>URL</th><th>Статус (Celery)</th></tr></thead>
+                <tbody id="myWebsitesTable"></tbody>
+            </table>
+        </div>
+
+
+        <h2>🌍 Публичный дашборд (Сайты сообщества)</h2>
+        <p style="font-size: 12px; color: #888;"></p>
+        <table>
+            <thead><tr><th>Название</th><th>URL</th><th>Статус</th></tr></thead>
+            <tbody id="publicWebsitesTable"></tbody>
+        </table>
+    </div>
+
+    <script>
+        const token = localStorage.getItem('token');
+        
+
+        if (token) {
+            document.getElementById('authPanel').classList.add('hidden');
+            document.getElementById('adminPanel').classList.remove('hidden');
+            document.getElementById('mySitesSection').classList.remove('hidden');
+            fetchUserData();
+        }
+
+        async function fetchUserData() {
+            const res = await fetch('/api/users/me', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                document.getElementById('userEmailDisplay').innerText = data.email;
+            } else {
+                logout(); 
+            }
+        }
+
+        async function register() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const res = await fetch('/api/register', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({email, password})
+            });
+            if (res.ok) alert("Успешно! Теперь нажмите 'Войти'.");
+            else alert("Ошибка. Возможно, Email уже занят.");
+        }
+
+        async function login() {
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            const formData = new URLSearchParams();
+            formData.append('username', email);
+            formData.append('password', password);
+
+            const res = await fetch('/api/login', {
+                method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: formData
+            });
+            if (res.ok) {
+                const data = await res.json();
+                localStorage.setItem('token', data.access_token);
+                location.reload();
+            } else alert("Неверный логин или пароль");
+        }
+
+        function logout() {
+            localStorage.removeItem('token');
+            location.reload();
+        }
+
+        async function addWebsite() {
+            const name = document.getElementById('siteName').value;
+            const url = document.getElementById('siteUrl').value;
+            const res = await fetch('/api/websites', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({name, url})
+            });
+            if (res.ok) {
+                document.getElementById('siteName').value = '';
+                document.getElementById('siteUrl').value = '';
+                loadWebsites();
+            }
+        }
+
+        function renderTable(sites, tbodyId) {
+            const tbody = document.getElementById(tbodyId);
+            tbody.innerHTML = '';
+            sites.forEach(s => {
+                let cls = s.status === 'Up' ? 'up' : s.status === 'Down' ? 'down' : 'unknown';
+                tbody.innerHTML += `<tr><td>${s.name}</td><td><a href="${s.url}" target="_blank">${s.url}</a></td><td class="${cls}">● ${s.status}</td></tr>`;
+            });
+        }
+
+        async function loadWebsites() {
+
+            const resPublic = await fetch('/api/websites');
+            const publicSites = await resPublic.json();
+            renderTable(publicSites, 'publicWebsitesTable');
+
+
+            if (token) {
+                const resPrivate = await fetch('/api/websites/me', {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (resPrivate.ok) {
+                    const privateSites = await resPrivate.json();
+                    renderTable(privateSites, 'myWebsitesTable');
+                }
+            }
+        }
+
+        loadWebsites();
+        setInterval(loadWebsites, 5000); 
+    </script>
+</body>
+</html>

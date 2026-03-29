@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: celery-worker
+  template:
+    metadata:
+      labels:
+        app: celery-worker
+    spec:
+      containers:
+      - name: celery-worker
+        image: uptime-backend:latest
+        imagePullPolicy: Never
+        command: ["celery", "-A", "main.celery_app", "worker", "--loglevel=info"]
+        envFrom:
+        - secretRef:
+            name: uptime-secrets

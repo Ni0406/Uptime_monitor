@@ -1,0 +1,18 @@
+db:
+  user: user
+  password: password
+  name: uptime_db
+  storage: 1Gi
+
+backend:
+  image: uptime-backend
+  tag: latest
+
+frontend:
+  image: uptime-frontend
+  tag: latest
+
+
+celery:
+  image: uptime-backend 
+  tag: latest
