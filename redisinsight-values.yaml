@@ -1,0 +1,15 @@
+ingress:
+  enabled: true
+  ingressClassName: nginx
+  hosts:
+    - host: redisinsight.local
+      paths:
+        - /
+
+persistence:
+  enabled: true
+  size: 1Gi
+  accessModes:
+    - ReadWriteOnce
+
+    

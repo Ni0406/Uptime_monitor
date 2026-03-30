@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-beat
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: celery-beat
+  template:
+    metadata:
+      labels:
+        app: celery-beat
+    spec:
+      containers:
+      - name: celery-beat
+        image: "{{ .Values.backend.image }}:{{ .Values.backend.tag }}"
+        imagePullPolicy: Never
+        command: ["celery", "-A", "main.celery_app", "beat", "--loglevel=info"]
+        envFrom:
+        - secretRef:
+            name: uptime-secrets

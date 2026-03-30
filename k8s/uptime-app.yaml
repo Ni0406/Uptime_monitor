@@ -1,5 +1,4 @@
 ---
-# 1. СЕКРЕТЫ (Храним пароли безопасно)
 apiVersion: v1
 kind: Secret
 metadata:
@@ -9,11 +8,9 @@ stringData:
   POSTGRES_USER: user
   POSTGRES_PASSWORD: password
   POSTGRES_DB: uptime_db
-  # Обрати внимание, хост базы тут называется "db", так как мы так назовем Service ниже
   DATABASE_URL: postgresql://user:password@db:5432/uptime_db
 
 ---
-# 2. ХРАНИЛИЩЕ ДЛЯ БАЗЫ (Persistent Volume Claim)
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -26,7 +23,7 @@ spec:
       storage: 1Gi
 
 ---
-# 3. БАЗА ДАННЫХ: Deployment и Service
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -69,7 +66,7 @@ spec:
     targetPort: 5432
 
 ---
-# 4. БЭКЕНД: Deployment и Service
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -87,7 +84,7 @@ spec:
       containers:
       - name: backend
         image: uptime-backend:latest
-        imagePullPolicy: Never  # Важно! Говорим Куберу брать локальный образ, а не качать из интернета
+        imagePullPolicy: Never  
         envFrom:
         - secretRef:
             name: uptime-secrets
@@ -106,7 +103,7 @@ spec:
     targetPort: 8000
 
 ---
-# 5. ФРОНТЕНД: Deployment и Service (LoadBalancer для доступа снаружи)
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -133,7 +130,7 @@ kind: Service
 metadata:
   name: frontend
 spec:
-  type: LoadBalancer  # Делает сайт доступным на localhost:80
+  type: LoadBalancer  
   selector:
     app: frontend
   ports:

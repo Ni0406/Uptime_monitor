@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey
 from sqlalchemy.orm import declarative_base, sessionmaker, Session, relationship
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, HttpUrl # Новое, противодействуем поступающему мусору при post запросах по дабавлению сайтов.
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from datetime import datetime, timedelta
@@ -17,7 +17,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@db:5432/upt
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "amqp://guest:guest@rabbitmq:5672//")
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
-# Для jwt авторизации. Идет
+# Для jwt авторизации
 SECRET_KEY = "super_secret_key"
 ALGORITHM = "HS256"
 
@@ -30,6 +30,14 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
 celery_app = Celery("uptime_tasks", broker=CELERY_BROKER_URL)
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+
+# --- НАСТРОЙКА ПЛАНИРОВЩИКА (Celery beat)
+celery_app.conf.beat_schedule = {
+    'ping-every-60-seconds': {
+        'task': 'ping_all_websites',
+        'schedule': 60.0,  
+    },
+}
 
 # --- БАЗА ДАННЫХ (Модели) ---
 class User(Base):
@@ -53,17 +61,34 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(title="Uptime Monitor")
 
 # --- СХЕМЫ (Pydantic) ---
-class UserCreate(BaseModel): email: str; password: str
-class WebsiteCreate(BaseModel): name: str; url: str
+class UserCreate(BaseModel): 
+    email: str
+    password: str
+
+class WebsiteCreate(BaseModel): 
+    name: str = Field(..., min_length=1) 
+    url: HttpUrl  
 
 def get_db():
     db = SessionLocal()
     try: yield db
     finally: db.close()
 
-# --- ФОНОВАЯ ЗАДАЧА CELERY (HW 4) ---
+# --- ФОНОВЫЕ ЗАДАЧИ CELERY (HW 4) ---
+@celery_app.task(name="ping_all_websites")
+def ping_all_websites():
+    """Эта задача запускается раз в минуту (Beat). Она берет все сайты и кидает их в очередь."""
+    db = SessionLocal()
+    try:
+        sites = db.query(Website).all()
+        for site in sites:
+            ping_website.delay(site.id) 
+    finally:
+        db.close()
+
 @celery_app.task(name="ping_website")
 def ping_website(website_id: int):
+    """Эта задача пингует один конкретный сайт (Worker)."""
     db = SessionLocal()
     try:
         site = db.query(Website).filter(Website.id == website_id).first()
@@ -76,10 +101,9 @@ def ping_website(website_id: int):
             site.status = "Down"
             
         db.commit()
-        redis_client.delete("websites_cache")
     finally:
         db.close()
-
+        
 # --- АВТОРИЗАЦИЯ ---
 def create_access_token(data: dict):
     to_encode = data.copy()
@@ -89,9 +113,11 @@ def create_access_token(data: dict):
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        if payload.get("sub") is None: raise credentials_exception
+        if payload.get("sub") is None: 
+            raise HTTPException(status_code=401, detail="Invalid token")
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
+    
     user = db.query(User).filter(User.email == payload.get("sub")).first()
     if not user: raise HTTPException(status_code=401, detail="User not found")
     return user
@@ -111,34 +137,6 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         raise HTTPException(status_code=400, detail="Incorrect email or password")
     return {"access_token": create_access_token({"sub": user.email}), "token_type": "bearer"}
 
-# --- КЭШИРОВАНИЕ REDIS (HW 5) ---
-@app.get("/api/websites")
-def get_all_websites(db: Session = Depends(get_db)):
-
-    cached = redis_client.get("websites_cache")
-    if cached:
-        return json.loads(cached)
-    
-    sites = db.query(Website).order_by(Website.id.desc()).all()
-    result =[{"id": s.id, "name": s.name, "url": s.url, "status": s.status} for s in sites]
-    
-    redis_client.setex("websites_cache", 15, json.dumps(result))
-    return result
-
-@app.post("/api/websites")
-def add_website(site: WebsiteCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    db_site = Website(name=site.name, url=site.url, owner_id=current_user.id)
-    db.add(db_site)
-    db.commit()
-    db.refresh(db_site)
-    
-
-    ping_website.delay(db_site.id)
-
-    redis_client.delete("websites_cache")
-    return db_site
-
-
 @app.get("/api/users/me")
 def get_me(current_user: User = Depends(get_current_user)):
     """Возвращает данные текущего пользователя (email)"""
@@ -149,3 +147,31 @@ def get_my_websites(current_user: User = Depends(get_current_user), db: Session 
     """Возвращает только те сайты, которые добавил текущий пользователь"""
     sites = db.query(Website).filter(Website.owner_id == current_user.id).order_by(Website.id.desc()).all()
     return[{"id": s.id, "name": s.name, "url": s.url, "status": s.status} for s in sites]
+
+
+# --- КЭШИРОВАНИЕ REDIS (HW 5) ---
+@app.get("/api/websites")
+def get_all_websites(db: Session = Depends(get_db)):
+    """Отдает публичный дашборд. Сначала ищет в Redis, если нет - в БД."""
+    cached = redis_client.get("websites_cache")
+    if cached: 
+        return json.loads(cached)
+    
+    sites = db.query(Website).order_by(Website.id.desc()).all()
+    result =[{"id": s.id, "name": s.name, "url": s.url, "status": s.status} for s in sites]
+    
+    redis_client.setex("websites_cache", 15, json.dumps(result))
+    return result
+
+@app.post("/api/websites")
+def add_website(site: WebsiteCreate, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Добавляет новый сайт и кидает задачу на первую проверку в RabbitMQ."""
+    db_site = Website(name=site.name, url=str(site.url), owner_id=current_user.id)
+    db.add(db_site)
+    db.commit()
+    db.refresh(db_site)
+    
+    ping_website.delay(db_site.id)
+    
+    return db_site
+#  l

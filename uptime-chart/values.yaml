@@ -12,7 +12,17 @@ frontend:
   image: uptime-frontend
   tag: latest
 
-
 celery:
   image: uptime-backend 
   tag: latest
+
+
+ingress:
+  enabled: true
+  className: nginx 
+  hosts:
+    - host: redisinsight.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+      
