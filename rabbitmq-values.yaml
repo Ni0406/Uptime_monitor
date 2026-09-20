@@ -1,0 +1,17 @@
+auth:
+  erlangCookie: "secretcookie123"
+
+service:
+  type: LoadBalancer
+
+persistence:
+  enabled: true
+  size: 1Gi
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 300m
+    memory: 512Mi

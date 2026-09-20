@@ -1,0 +1,462 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "rabbitmq.fullname" . }}
+  namespace: {{ include "cloudpirates.namespace" . }}
+  labels:
+    {{- toYaml (merge (include "rabbitmq.labels" . | fromYaml) .Values.statefulsetLabels) | nindent 4 }}
+  {{- if or (include "rabbitmq.annotations" .) .Values.statefulsetAnnotations }}
+  annotations:
+    {{- toYaml (merge (include "rabbitmq.annotations" . | fromYaml) .Values.statefulsetAnnotations) | nindent 4 }}
+  {{- end }}
+spec:
+  serviceName: {{ include "rabbitmq.fullname" . }}-headless
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  podManagementPolicy: {{ .Values.podManagementPolicy }}
+  selector:
+    matchLabels:
+      {{- include "rabbitmq.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rabbitmq.selectorLabels" . | nindent 8 }}
+        {{- if .Values.podLabels }}
+        {{- toYaml .Values.podLabels | nindent 8 }}
+        {{- end }}
+      {{- if .Values.podAnnotations }}
+      annotations:
+        {{- toYaml .Values.podAnnotations | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with (include "rabbitmq.imagePullSecrets" .) }}
+      {{ . | nindent 6 }}
+      {{- end }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      serviceAccountName: {{ include "rabbitmq.serviceAccountName" . }}
+      securityContext: {{ include "cloudpirates.renderPodSecurityContext" . | nindent 8 }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- end }}
+      initContainers:
+        - name: init-erlang-cookie
+          image: {{ include "rabbitmq.initContainer.image" . | quote }}
+          imagePullPolicy: "{{ .Values.initContainer.image.pullPolicy }}"
+          securityContext: {{ include "cloudpirates.renderContainerSecurityContext" . | nindent 12 }}
+          command:
+            - sh
+            - -c
+            - |
+              {{- if .Values.auth.enabled }}
+              echo "$RABBITMQ_ERLANG_COOKIE" > {{ .Values.persistence.mountPath }}/.erlang.cookie
+              {{- else }}
+              # Generate a default Erlang cookie when auth is disabled
+              echo "defaultcookie" > {{ .Values.persistence.mountPath }}/.erlang.cookie
+              {{- end }}
+              chmod {{ .Values.auth.erlangCookiePermissions }} {{ .Values.persistence.mountPath }}/.erlang.cookie
+              chown $(id -u):$(id -g) {{ .Values.persistence.mountPath }}/.erlang.cookie
+          {{- if .Values.auth.enabled }}
+          env:
+            - name: RABBITMQ_ERLANG_COOKIE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rabbitmq.secretName" . }}
+                  key: {{ include "rabbitmq.secretErlangCookieKey" . }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+          {{- with .Values.initContainer.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- if .Values.installPlugins }}
+        - name: download-plugins
+          image: {{ include "rabbitmq.initContainer.image" . | quote }}
+          imagePullPolicy: "{{ .Values.initContainer.image.pullPolicy }}"
+          securityContext: {{ include "cloudpirates.renderContainerSecurityContext" . | nindent 12 }}
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p {{ .Values.persistence.mountPath }}/plugins
+              {{- range .Values.installPlugins }}
+              echo "Downloading plugin from {{ . }}"
+              wget -O {{ $.Values.persistence.mountPath }}/plugins/$(basename {{ . }}) {{ . }}
+              {{- end }}
+              echo "Moving downloaded plugins to shared directory"
+              if ls {{ .Values.persistence.mountPath }}/plugins/*.ez 1> /dev/null 2>&1; then
+                mv {{ .Values.persistence.mountPath }}/plugins/*.ez /tmp/plugins/
+                echo "Successfully moved plugins"
+              else
+                echo "No plugins to move"
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            - name: plugins
+              mountPath: /tmp/plugins
+          {{- with .Values.initContainer.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+        - name: copy-plugins
+          image: {{ include "rabbitmq.image" . | quote }}
+          imagePullPolicy: {{ include "cloudpirates.imagePullPolicy" (dict "image" .Values.image) }}
+          securityContext: {{ include "cloudpirates.renderContainerSecurityContext" . | nindent 12 }}
+          command:
+            - sh
+            - -c
+            - |
+              echo "Copying built-in RabbitMQ plugins to shared directory"
+              cp -r /opt/rabbitmq/plugins/* /tmp/plugins/
+              echo "Built-in plugins copied successfully"
+          volumeMounts:
+            - name: plugins
+              mountPath: /tmp/plugins
+          {{- with .Values.initContainer.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.customScripts.initContainers }}
+        {{- toYaml .Values.customScripts.initContainers | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext: {{ include "cloudpirates.renderContainerSecurityContext" . | nindent 12 }}
+          image: {{ include "rabbitmq.image" . | quote }}
+          imagePullPolicy: {{ include "cloudpirates.imagePullPolicy" (dict "image" .Values.image) }}
+          {{- if or .Values.customScripts.postStart.enabled .Values.customScripts.preStop.enabled .Values.queueBalancing.autoRebalance.enabled }}
+          lifecycle:
+            {{- if or .Values.customScripts.postStart.enabled .Values.queueBalancing.autoRebalance.enabled }}
+            postStart:
+              exec:
+                command:
+                  {{- if .Values.customScripts.postStart.enabled }}
+                  {{- toYaml .Values.customScripts.postStart.command | nindent 18 }}
+                  {{- else if .Values.queueBalancing.autoRebalance.enabled }}
+                  - /bin/bash
+                  - -c
+                  - |
+                    log() {
+                      echo "$(date '+%Y-%m-%d %H:%M:%S') [QUEUE-REBALANCE] $1" >> /proc/1/fd/1
+                    }
+
+                    log "Starting automatic queue rebalancing..."
+                    log "Waiting {{ .Values.queueBalancing.autoRebalance.delay }}s for cluster to stabilize..."
+                    sleep {{ .Values.queueBalancing.autoRebalance.delay }}
+
+                    log "Checking RabbitMQ cluster status..."
+                    until rabbitmqctl node_health_check >/dev/null 2>&1; do
+                      log "RabbitMQ not ready yet, retrying in 5s..."
+                      sleep 5
+                    done
+
+                    log "RabbitMQ is ready. Starting queue rebalancing..."
+
+                    {{- if .Values.queueBalancing.autoRebalance.vhosts }}
+                    # Rebalance specific vhosts
+                    {{- range .Values.queueBalancing.autoRebalance.vhosts }}
+                    log "Rebalancing vhost: {{ . }}"
+                    if rabbitmqctl list_vhosts -q | grep -q "^{{ . }}$"; then
+                      rabbitmq-queues rebalance all -p "{{ . }}" 2>&1 | while read line; do
+                        log "  $line"
+                      done
+                    else
+                      log "  Vhost {{ . }} not found, skipping"
+                    fi
+                    {{- end }}
+                    {{- else }}
+                    # Rebalance all vhosts
+                    for vhost in $(rabbitmqctl list_vhosts -q); do
+                      log "Rebalancing vhost: $vhost"
+                      rabbitmq-queues rebalance all -p "$vhost" 2>&1 | while read line; do
+                        log "  $line"
+                      done || log "  Failed to rebalance vhost: $vhost"
+                    done
+                    {{- end }}
+
+                    log "Queue rebalancing completed successfully"
+                  {{- end }}
+            {{- end }}
+            {{- if .Values.customScripts.preStop.enabled }}
+            preStop:
+              exec:
+                command:
+                  {{- toYaml .Values.customScripts.preStop.command | nindent 18 }}
+            {{- end }}
+          {{- end }}
+          ports:
+            - name: amqp
+              containerPort: {{ .Values.service.amqpPort }}
+            - name: mgmt
+              containerPort: {{ .Values.service.managementPort }}
+            - name: epmd
+              containerPort: 4369
+            - name: dist
+              containerPort: 25672
+            {{- if .Values.metrics.enabled }}
+            - name: prometheus
+              containerPort: {{ .Values.metrics.port }}
+            {{- end }}
+            {{- range .Values.extraPorts }}
+            - containerPort: {{ .containerPort }}
+              name: {{ .name }}
+            {{- end }}
+          env:
+            {{- if .Values.auth.enabled }}
+            - name: RABBITMQ_DEFAULT_USER
+              value: {{ .Values.auth.username | quote }}
+            - name: RABBITMQ_DEFAULT_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rabbitmq.secretName" . }}
+                  key: {{ include "rabbitmq.secretPasswordKey" . }}
+            - name: RABBITMQ_ERLANG_COOKIE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "rabbitmq.secretName" . }}
+                  key: {{ include "rabbitmq.secretErlangCookieKey" . }}
+            {{- end }}
+            - name: RABBITMQ_USE_LONGNAME
+              value: {{ .Values.peerDiscoveryK8sPlugin.useLongname | quote }}
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- if .Values.peerDiscoveryK8sPlugin.useLongname }}
+            - name: RABBITMQ_NODENAME
+              value: rabbit@$(NODE_NAME).{{ include "rabbitmq.fullname" . }}-headless.{{ include "cloudpirates.namespace" . }}.svc.{{ .Values.clusterDomain }}
+            {{- else }}
+            - name: RABBITMQ_NODENAME
+              value: rabbit@$(NODE_NAME)
+            {{- end }}
+            {{- with .Values.extraEnvVars }}
+{{ toYaml . | indent 12 }}
+            {{- end }}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - rabbitmq-diagnostics -q check_running
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+            successThreshold: {{ .Values.livenessProbe.successThreshold }}
+          {{- end }}
+          {{- if .Values.readinessProbe.enabled }}
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - rabbitmq-diagnostics -q check_running
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+            successThreshold: {{ .Values.readinessProbe.successThreshold }}
+          {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            - name: config
+              mountPath: /etc/rabbitmq
+            - name: logs
+              mountPath: /var/log/rabbitmq
+            {{- if .Values.installPlugins }}
+            - name: plugins
+              mountPath: /opt/rabbitmq/plugins
+            {{- end }}
+            {{- if .Values.definitions.enabled }}
+            - name: definitions
+              {{- if .Values.definitions.autoReload.enabled }}
+              mountPath: "/etc/rabbitmq-definitions"
+              readOnly: true
+              {{- else }}
+              mountPath: "/etc/rabbitmq-definitions/defs.json"
+              subPath: {{- if .Values.definitions.existingConfigMap }}
+                {{ .Values.definitions.existingConfigMapKey | default "defs.json" }}
+              {{- else if .Values.definitions.existingSecret }}
+                {{ .Values.definitions.existingSecretKey | default "defs.json" }}
+              {{- else }}
+                defs.json
+              {{- end }}
+              {{- end }}
+            {{- end }}
+            {{- if .Values.extraVolumeMounts }}
+            {{- toYaml .Values.extraVolumeMounts | nindent 12 }}
+            {{- end }}
+        {{- if and .Values.definitions.enabled .Values.definitions.autoReload.enabled }}
+        - name: definitions-reloader
+          image: {{ include "rabbitmq.definitions.autoReload.image" . | quote }}
+          imagePullPolicy: {{ .Values.definitions.autoReload.image.pullPolicy }}
+          securityContext: {{ include "cloudpirates.renderContainerSecurityContext" . | nindent 12 }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Starting RabbitMQ definitions auto-reloader sidecar..."
+
+              DEFINITIONS_FILE="/etc/rabbitmq-definitions/{{- if .Values.definitions.existingConfigMap }}{{ .Values.definitions.existingConfigMapKey | default "defs.json" }}{{- else if .Values.definitions.existingSecret }}{{ .Values.definitions.existingSecretKey | default "defs.json" }}{{- else }}defs.json{{- end }}"
+              LAST_CHECKSUM=""
+              CHECK_INTERVAL=10
+
+              # Wait for RabbitMQ to be ready
+              echo "Waiting for RabbitMQ management API to be ready..."
+              until [ "$(curl -s -L -o /dev/null -w '%{http_code}' http://localhost:{{ .Values.service.managementPort }}/ 2>/dev/null)" = "200" ]; do
+                echo "RabbitMQ not ready yet, waiting..."
+                sleep 5
+              done
+              echo "RabbitMQ is ready!"
+
+              # Monitor loop
+              while true; do
+                if [ -f "$DEFINITIONS_FILE" ]; then
+                  CURRENT_CHECKSUM=$(md5sum "$DEFINITIONS_FILE" | awk '{print $1}')
+
+                  if [ -n "$LAST_CHECKSUM" ] && [ "$CURRENT_CHECKSUM" != "$LAST_CHECKSUM" ]; then
+                    echo "Detected change in definitions file (checksum: $CURRENT_CHECKSUM)"
+                    echo "Reloading RabbitMQ definitions via management API..."
+
+                    # Import definitions using RabbitMQ management API
+                    {{- if .Values.auth.enabled }}
+                    RABBITMQ_PASSWORD=$(cat /var/run/secrets/rabbitmq/{{ include "rabbitmq.secretPasswordKey" . }})
+                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                      -X POST \
+                      -H "Content-Type: application/json" \
+                      -u "{{ .Values.auth.username }}:$RABBITMQ_PASSWORD" \
+                      --data-binary @"$DEFINITIONS_FILE" \
+                      http://localhost:{{ .Values.service.managementPort }}/api/definitions)
+                    {{- else }}
+                    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                      -X POST \
+                      -H "Content-Type: application/json" \
+                      --data-binary @"$DEFINITIONS_FILE" \
+                      http://localhost:{{ .Values.service.managementPort }}/api/definitions)
+                    {{- end }}
+
+                    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "204" ]; then
+                      echo "Successfully reloaded definitions!"
+                    else
+                      echo "Warning: Failed to reload definitions (HTTP $HTTP_CODE)"
+                    fi
+                  elif [ -z "$LAST_CHECKSUM" ]; then
+                    echo "Initial checksum: $CURRENT_CHECKSUM"
+                  fi
+
+                  LAST_CHECKSUM=$CURRENT_CHECKSUM
+                else
+                  echo "Warning: Definitions file not found at $DEFINITIONS_FILE"
+                fi
+
+                sleep $CHECK_INTERVAL
+              done
+          {{- with .Values.definitions.autoReload.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: definitions
+              mountPath: "/etc/rabbitmq-definitions"
+              readOnly: true
+            {{- if .Values.auth.enabled }}
+            - name: rabbitmq-secret
+              mountPath: "/var/run/secrets/rabbitmq"
+              readOnly: true
+            {{- end }}
+        {{- end }}
+      volumes:
+        - name: logs
+          emptyDir: {}
+        {{- if not .Values.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- else if .Values.persistence.existingClaim }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | quote }}
+        {{- end }}
+        {{- if .Values.installPlugins }}
+        - name: plugins
+          emptyDir: {}
+        {{- end }}
+        - name: config
+          configMap:
+            name: {{ include "rabbitmq.fullname" . }}-config
+        {{- if .Values.definitions.enabled }}
+        - name: definitions
+          {{- if .Values.definitions.existingConfigMap }}
+          configMap:
+            name: {{ .Values.definitions.existingConfigMap }}
+          {{- else if .Values.definitions.existingSecret }}
+          secret:
+            secretName: {{ include "cloudpirates.tplvalues.render" (dict "value" .Values.definitions.existingSecret "context" $) }}
+          {{- else }}
+          configMap:
+            name: {{ printf "%s-definitions" (include "rabbitmq.fullname" .) }}
+          {{- end }}
+        {{- end }}
+        {{- if and .Values.definitions.enabled .Values.definitions.autoReload.enabled .Values.auth.enabled }}
+        - name: rabbitmq-secret
+          secret:
+            secretName: {{ include "rabbitmq.secretName" . }}
+            items:
+              - key: {{ include "rabbitmq.secretPasswordKey" . }}
+                path: {{ include "rabbitmq.secretPasswordKey" . }}
+        {{- end }}
+        {{- if .Values.extraVolumes }}
+        {{- toYaml .Values.extraVolumes | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: data
+        {{- with $labels := merge (include "rabbitmq.selectorLabels" . | fromYaml) .Values.persistence.labels .Values.podLabels }}
+        labels:
+          {{- toYaml $labels | nindent 10 }}
+        {{- end }}
+        {{- with .Values.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- range .Values.persistence.accessModes }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size | quote }}
+  {{- end }}
+  {{- if .Values.persistentVolumeClaimRetentionPolicy.enabled }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: {{ .Values.persistentVolumeClaimRetentionPolicy.whenDeleted }}
+    whenScaled: {{ .Values.persistentVolumeClaimRetentionPolicy.whenScaled }}
+  {{- end }}

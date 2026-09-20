@@ -1,0 +1,6 @@
+image:
+  repository: postgres
+  tag: "15"
+replicas: 1
+port: 5432
+storageSize: 1Gi

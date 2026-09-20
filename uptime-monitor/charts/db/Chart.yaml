@@ -1,0 +1,4 @@
+apiVersion: v2
+name: db
+version: 0.1.0
+description: PostgreSQL subchart

@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rabbitmq.fullname" . }}-headless
+  namespace: {{ include "cloudpirates.namespace" . }}
+  labels:
+    {{- include "rabbitmq.labels" . | nindent 4 }}
+  {{- if or (include "rabbitmq.annotations" .) .Values.service.annotationsHeadless }}
+  annotations:
+    {{- toYaml (merge (include "rabbitmq.annotations" . | fromYaml) .Values.service.annotationsHeadless) | nindent 4 }}
+  {{- end }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - port: {{ .Values.service.amqpPort }}
+      targetPort: amqp
+      name: amqp
+    - port: {{ .Values.service.epmdPort }}
+      targetPort: epmd
+      name: epmd
+    - port: {{ .Values.service.distPort }}
+      targetPort: dist
+      name: dist
+    {{- if .Values.managementPlugin.enabled }}
+    - port: {{ .Values.service.managementPort }}
+      targetPort: mgmt
+      name: mgmt
+    {{- end }}
+    {{- range .Values.extraPorts }}
+    - port: {{ .port }}
+      targetPort: {{ .targetPort | default .name }}
+      name: {{ .name }}
+    {{- end }}
+  selector:
+    {{- include "rabbitmq.selectorLabels" . | nindent 4 }}
