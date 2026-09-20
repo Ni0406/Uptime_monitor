@@ -15,12 +15,11 @@ import redis
 import celeryconfig
 
 # --- НАСТРОЙКИ ОКРУЖЕНИЯ ---
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@uptime-db:5432/uptime_db")
+DATABASE_URL = os.getenv("DATABASE_URL")
 REDIS_URL = os.getenv("REDIS_URL", "redis://uptime-redis:6379/0")
 SECRET_KEY = os.getenv("SECRET_KEY", "super_secret_jwt_key")
 ALGORITHM = "HS256"
 
-# --- ИНИЦИАЛИЗАЦИЯ CELERY ---
 celery_app = Celery("uptime_tasks")
 celery_app.config_from_object(celeryconfig)
 
@@ -185,7 +184,6 @@ def add_website(site: WebsiteCreate, db: Session = Depends(get_db), current_user
     db.commit()
     db.refresh(db_site)
 
-    # Запускаем Celery-задачу
     task = ping_website.delay(db_site.id)
 
     return {
@@ -203,7 +201,7 @@ def get_task_status(task_id: str):
     res = AsyncResult(task_id, app=celery_app)
     return {
         "task_id": task_id,
-        "status": res.status,  # PENDING, STARTED, SUCCESS, FAILURE
+        "status": res.status,  
         "ready": res.ready(),
         "result": res.result if res.ready() else None
     }
