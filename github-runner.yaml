@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-runner
+  labels:
+    app: github-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: github-runner
+  template:
+    metadata:
+      labels:
+        app: github-runner
+    spec:
+      containers:
+      - name: runner
+        image: custom-github-runner:latest
+        imagePullPolicy: Never
+        env:
+        - name: REPO_URL
+          value: "https://github.com/Ni0406/Uptime_monitor"
+        - name: RUNNER_TOKEN
+          value: "BCJXJRMW2EICEK2KVERVANTKWBZV6"
+        - name: RUNNER_NAME
+          value: "minikube-runner"
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+      volumes:
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock

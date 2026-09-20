@@ -1,0 +1,17 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    curl sudo git jq tar libicu70 ca-certificates docker.io \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash runner && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+WORKDIR /home/runner
+USER runner
+
+RUN curl -o actions-runner-linux-arm64-2.319.1.tar.gz -L https://github.com/actions/runner/releases/download/v2.319.1/actions-runner-linux-arm64-2.319.1.tar.gz \
+    && tar xzf actions-runner-linux-arm64-2.319.1.tar.gz \
+    && rm actions-runner-linux-arm64-2.319.1.tar.gz
+
+CMD ["sh", "-c", "./config.sh --url ${REPO_URL} --token ${RUNNER_TOKEN} --name ${RUNNER_NAME} --unattended --replace && ./run.sh"]
