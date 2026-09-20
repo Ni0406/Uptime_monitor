@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-flower
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flower
+  template:
+    metadata:
+      labels:
+        app: flower
+    spec:
+      containers:
+      - name: flower
+        image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+        imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+        command: ["celery", "-A", "main.celery_app", "flower", "--port=5555"]
+        ports:
+        - containerPort: 5555
+        envFrom:
+        - secretRef:
+            name: {{ .Release.Name }}-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-flower
+spec:
+  type: LoadBalancer
+  selector:
+    app: flower
+  ports:
+  - port: 5555
+    targetPort: 5555

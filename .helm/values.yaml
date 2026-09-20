@@ -1,0 +1,43 @@
+backend:
+  image:
+    repository: uptime-backend
+    tag: latest
+    pullPolicy: Never
+  replicas: 1
+  port: 8000
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+frontend:
+  image:
+    repository: uptime-frontend
+    tag: latest
+    pullPolicy: Never
+  replicas: 1
+  port: 80
+  serviceType: LoadBalancer
+
+# Настройки для subchart "db"
+db:
+  replicas: 1
+  storageSize: 1Gi
+
+secrets:
+  postgresUser: ref+vault://secret/uptime#/POSTGRES_USER
+  postgresPassword: ref+vault://secret/uptime#/POSTGRES_PASSWORD
+  postgresDb: ref+vault://secret/uptime#/POSTGRES_DB
+
+
+redis:
+  image:
+    repository: redis
+    tag: "7.0-alpine"
+  port: 6379
+  storageSize: 1Gi
+
+
